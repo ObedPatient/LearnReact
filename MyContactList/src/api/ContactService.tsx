@@ -1,12 +1,16 @@
-// src/services/contactService.ts
+// src/api/ContactService.ts
 import axiosInstance from "./axios";
 import type { Contact, PaginatedResponse } from "../types";
 
 const API_URL = "http://localhost:8080/contacts";
 
-export const saveContact = async (contact: Contact): Promise<Contact> => {
-  const { data } = await axiosInstance.post<Contact>(API_URL, contact);
-  return data;
+export const saveContact = async (formData: FormData): Promise<Contact> => {
+  try {
+    const { data } = await axiosInstance.post<Contact>(API_URL, formData);
+    return data;
+  } catch (error: any) {
+    throw new Error(error.response?.data?.message || "Failed to save contact");
+  }
 };
 
 export const getContact = async (id: string): Promise<Contact> => {

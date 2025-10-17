@@ -3,17 +3,16 @@ package com.example.contactlist.service;
 import com.example.contactlist.model.Contact;
 import com.example.contactlist.repository.ContactRepo;
 import jakarta.transaction.Transactional;
+import jakarta.validation.ConstraintViolationException;
 import lombok.AllArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -36,15 +35,42 @@ public class ContactService {
     }
 
     public Contact getContact(String id) {
-        return contactRepo.findById(id).orElse(null);
+        return contactRepo.findById(id).orElseThrow(() -> new IllegalArgumentException("Contact not found: " + id));
     }
 
     public Contact saveContact(Contact contact) {
-        return contactRepo.save(contact);
+        // Ensure ID is null for new contacts
+        if (contact.getId() != null && contact.getId().isEmpty()) {
+            contact.setId(null);
+        }
+        try {
+            return contactRepo.save(contact); // Persist for new contacts, merge for existing
+        } catch (ConstraintViolationException e) {
+            throw new IllegalArgumentException("Validation failed: " + e.getMessage());
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to save contact: " + e.getMessage(), e);
+        }
+    }
+
+    public Contact updateContact(String id, Contact contact) {
+        if (!contactRepo.existsById(id)) {
+            throw new IllegalArgumentException("Contact not found: " + id);
+        }
+        contact.setId(id);
+        try {
+            return contactRepo.save(contact);
+        } catch (ConstraintViolationException e) {
+            throw new IllegalArgumentException("Validation failed: " + e.getMessage());
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to update contact: " + e.getMessage(), e);
+        }
     }
 
     public void deleteContact(Contact contact) {
-        contactRepo.delete(contact);  // Implement as needed
+        if (contact == null || !contactRepo.existsById(contact.getId())) {
+            throw new IllegalArgumentException("Contact not found");
+        }
+        contactRepo.delete(contact);
     }
 
     public String saveImage(String id, MultipartFile file) {
@@ -52,42 +78,29 @@ public class ContactService {
             throw new IllegalArgumentException("Uploaded file is empty or missing");
         }
         Contact contact = getContact(id);
-        if (contact == null) {
-            throw new IllegalArgumentException("Contact not found for ID: " + id);
-        }
         String imageUrl = imageFunction.apply(id, file);
         contact.setImageUrl(imageUrl);
         contactRepo.save(contact);
         return imageUrl;
     }
 
-    private final Function<String, String> fileExtension = fileName -> {
-        if (!StringUtils.hasText(fileName)) return ".png";  // Handle null/empty filename
-        return Optional.of(fileName)
-                .filter(name -> name.contains("."))
-                .map(name -> "." + name.substring(name.lastIndexOf(".") + 1))  // Fixed: 'name' not 'fileName'
-                .orElse(".png");
-    };
+    private final Function<String, String> fileExtension = fileName -> Optional.ofNullable(fileName)
+            .filter(name -> name.contains("."))
+            .map(name -> "." + name.substring(name.lastIndexOf(".") + 1))
+            .orElse(".png");
 
     private final BiFunction<String, MultipartFile, String> imageFunction = (id, image) -> {
-        String sanitizedId = id.replaceAll("[^a-zA-Z0-9.-]", "_");  // Sanitize to prevent invalid chars
+        String sanitizedId = id.replaceAll("[^a-zA-Z0-9.-]", "_");
         String fileName = sanitizedId + fileExtension.apply(image.getOriginalFilename());
-        try (InputStream inputStream = image.getInputStream()) {
+        try {
             Path fileStorage = Paths.get(IMAGE_DIRECTORY).toAbsolutePath().normalize();
-
-            // Debug: Print the path (check console/logs)
-            System.out.println("Image directory path: " + fileStorage);
-
-            // Fixed: Always create directories (idempotent, handles missing parents)
             Files.createDirectories(fileStorage);
-
             Path targetPath = fileStorage.resolve(fileName);
-            Files.copy(inputStream, targetPath, REPLACE_EXISTING);
-
+            Files.copy(image.getInputStream(), targetPath, REPLACE_EXISTING);
             return ServletUriComponentsBuilder.fromCurrentContextPath()
-                    .path("/contacts/image/" + fileName).toUriString();
+                    .path("/contacts/image/" + fileName)
+                    .toUriString();
         } catch (IOException exception) {
-            exception.printStackTrace();  // Full details in logs
             throw new RuntimeException("Unable to save image: " + exception.getMessage(), exception);
         }
     };
